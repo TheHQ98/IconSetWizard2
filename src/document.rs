@@ -4,7 +4,7 @@ use std::{path::Path, sync::Arc};
 
 pub const CELL: u32 = 32;
 pub const COLS: usize = 16;
-pub const MAX_ROWS: usize = 256;
+pub const MAX_ROWS: usize = 1024;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Pixels {
@@ -74,7 +74,7 @@ impl Document {
             || image.height() / CELL > MAX_ROWS as u32
         {
             return Err(crate::i18n::tr(
-                "Iconset должен иметь ширину 512 px и полные ряды по 32 px (до 256 рядов).",
+                "Iconset должен иметь ширину 512 px и полные ряды по 32 px (до 1024 рядов).",
             )
             .into());
         }
@@ -119,8 +119,8 @@ impl Document {
                 }
             }
         }
-        if bytes > 64 * 1024 * 1024 {
-            return Err(crate::i18n::tr("Проект превышает лимит 64 MB пиксельных данных.").into());
+        if bytes > 256 * 1024 * 1024 {
+            return Err(crate::i18n::tr("Проект превышает лимит 256 MB пиксельных данных.").into());
         }
         Ok(())
     }
@@ -290,9 +290,11 @@ pub fn decode_png(bytes: &[u8]) -> Result<RgbaImage, String> {
 
 fn png_limits() -> image::Limits {
     let mut limits = image::Limits::default();
-    limits.max_image_width = Some(8192);
-    limits.max_image_height = Some(8192);
-    limits.max_alloc = Some(128 * 1024 * 1024);
+    // 1024 rows of 32 px. The decoder may keep both the raw frame and the output buffer.
+    let side = MAX_ROWS as u32 * CELL;
+    limits.max_image_width = Some(side);
+    limits.max_image_height = Some(side);
+    limits.max_alloc = Some(512 * 1024 * 1024);
     limits
 }
 
@@ -449,5 +451,107 @@ mod tests {
             serde_json::from_slice(&serde_json::to_vec(&doc).unwrap()).unwrap();
         restored.validate().unwrap();
         assert_eq!(doc.render(), restored.render());
+    }
+
+    #[test]
+    fn iconset_512x12576_decodes_and_validates() {
+        const WIDTH: u32 = 512;
+        const HEIGHT: u32 = 12_576;
+        const ROWS: usize = 393;
+        let bytes = {
+            let mut image = RgbaImage::new(WIDTH, HEIGHT);
+            image.put_pixel(0, 0, Rgba([12, 34, 56, 255]));
+            image.put_pixel(WIDTH - 1, HEIGHT - 1, Rgba([7, 8, 9, 255]));
+            let mut bytes = Vec::new();
+            {
+                use image::ImageEncoder;
+                image::codecs::png::PngEncoder::new_with_quality(
+                    std::io::Cursor::new(&mut bytes),
+                    image::codecs::png::CompressionType::Fast,
+                    image::codecs::png::FilterType::NoFilter,
+                )
+                .write_image(
+                    image.as_raw(),
+                    WIDTH,
+                    HEIGHT,
+                    image::ExtendedColorType::Rgba8,
+                )
+                .unwrap();
+            }
+            bytes
+        };
+        let (width, height, bit, color, interlace) =
+            png_ihdr(&bytes).expect("encoded iconset has an IHDR");
+        assert_eq!(
+            (width, height, bit, color, interlace),
+            (WIDTH, HEIGHT, 8, 6, 0)
+        );
+        {
+            let decoded = decode_png(&bytes).unwrap();
+            assert_eq!(decoded.dimensions(), (WIDTH, HEIGHT));
+            assert_eq!(decoded.get_pixel(0, 0).0, [12, 34, 56, 255]);
+            assert_eq!(decoded.get_pixel(WIDTH - 1, HEIGHT - 1).0, [7, 8, 9, 255]);
+        }
+        let path = std::env::temp_dir().join(format!(
+            "iconset-wizard-512x12576-{}-{}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let doc = Document::from_png(&path);
+        let _ = std::fs::remove_file(&path);
+        let doc = doc.unwrap();
+        assert_eq!(doc.tiles.len(), ROWS * COLS);
+        assert_eq!(doc.tiles[0][0].pixels.rgba[..4], [12, 34, 56, 255]);
+        let last = &doc.tiles[ROWS * COLS - 1][0].pixels.rgba;
+        assert_eq!(&last[last.len() - 4..], &[7, 8, 9, 255]);
+        doc.validate().unwrap();
+
+        for path in user_iconset_candidates() {
+            if !png_file_matches_user_iconset(&path) {
+                continue;
+            }
+            let image = read_png(&path).unwrap();
+            assert_eq!(image.dimensions(), (WIDTH, HEIGHT));
+            let doc = Document::from_png(&path).unwrap();
+            assert_eq!(doc.tiles.len(), ROWS * COLS);
+            doc.validate().unwrap();
+        }
+    }
+
+    fn png_ihdr(bytes: &[u8]) -> Option<(u32, u32, u8, u8, u8)> {
+        if bytes.len() < 29 || &bytes[..8] != b"\x89PNG\r\n\x1a\n" || &bytes[12..16] != b"IHDR" {
+            return None;
+        }
+        Some((
+            u32::from_be_bytes(bytes[16..20].try_into().unwrap()),
+            u32::from_be_bytes(bytes[20..24].try_into().unwrap()),
+            bytes[24],
+            bytes[25],
+            bytes[28],
+        ))
+    }
+
+    fn user_iconset_candidates() -> Vec<std::path::PathBuf> {
+        let mut paths = Vec::new();
+        if let Some(path) = std::env::var_os("ISW_REAL_ICONSET") {
+            paths.push(std::path::PathBuf::from(path));
+        }
+        paths.push(std::path::PathBuf::from(
+            "/home/ubuntu/.cursor/projects/workspace/assets/D__Programs_RMMZ_Kroko_Verse_img_system_IconSet.png",
+        ));
+        paths
+    }
+
+    fn png_file_matches_user_iconset(path: &std::path::Path) -> bool {
+        use std::io::Read;
+        let Ok(mut file) = std::fs::File::open(path) else {
+            return false;
+        };
+        let mut header = [0u8; 29];
+        file.read_exact(&mut header).is_ok() && png_ihdr(&header) == Some((512, 12_576, 8, 6, 0))
     }
 }

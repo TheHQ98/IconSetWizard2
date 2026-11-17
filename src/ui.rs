@@ -1294,13 +1294,21 @@ impl Wizard {
                         let (rect, response) =
                             ui.allocate_exact_size(size, Sense::click_and_drag());
                         checker(ui, rect, 8.0);
-                        if let Some(texture) = &self.sheet {
+                        let mut top = rect.top();
+                        for texture in &self.sheet {
+                            let rows = texture.size()[1] / CELL as usize;
+                            let strip_height = rows as f32 * cell;
+                            let strip_rect = Rect::from_min_size(
+                                Pos2::new(rect.left(), top),
+                                Vec2::new(rect.width(), strip_height),
+                            );
                             ui.painter().image(
                                 texture.id(),
-                                rect,
+                                strip_rect,
                                 Rect::from_min_max(Pos2::ZERO, Pos2::new(1., 1.)),
                                 Color32::WHITE,
                             );
+                            top += strip_height;
                         }
                         if self.grid {
                             let stroke = Stroke::new(1.0, Color32::from_black_alpha(100));

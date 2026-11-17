@@ -71,7 +71,7 @@ On macOS, use **Command** instead of Ctrl. When a text field is active, editing 
 | `.isw2` | Save and reopen editable projects with layers and adjustments |
 | `.iwpk` | Load icon packages from the original IconSet Wizard |
 
-- Atlases use **32 × 32 cells**, **16 columns**, and a **512 px width**, with up to **256 rows**.
+- Atlases use **32 × 32 cells**, **16 columns**, and a **512 px width**, with up to **1024 rows**.
 - Imported layer images are resized to fit a 32 × 32 cell.
 - This is an icon composition editor; pixel painting brushes are not included.
 - Extra rows are added manually. A pasted group must fit within the atlas.
