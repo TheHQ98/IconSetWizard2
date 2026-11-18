@@ -443,6 +443,22 @@
     "Empty row added.",
     "已添加空行。"
   ],
+  "Добавить изображение снизу": [
+    "Append iconset below",
+    "在下方合并图标集"
+  ],
+  "Слияние превысит 1024 рядов.": [
+    "Merge would exceed 1024 rows.",
+    "合并后会超过1024行。"
+  ],
+  "Удалить этот ряд": [
+    "Delete this row",
+    "删除此行"
+  ],
+  "Ряд удалён. Ctrl+Z — отменить.": [
+    "Row deleted. Ctrl+Z to undo.",
+    "已删除该行。按Ctrl+Z撤销。"
+  ],
   "Проект хранит слои.\nPNG — готовая картинка для игры.": [
     "Projects preserve layers.\nPNG is the final image for the game.",
     "项目保留图层。\nPNG是用于游戏的最终图像。"
