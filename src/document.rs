@@ -68,25 +68,13 @@ pub struct Document {
 impl Document {
     pub fn from_png(path: &Path) -> Result<Self, String> {
         let image = read_png(path)?;
-        if image.width() != CELL * COLS as u32
-            || image.height() == 0
-            || image.height() % CELL != 0
-            || image.height() / CELL > MAX_ROWS as u32
-        {
-            return Err(crate::i18n::tr(
-                "Iconset должен иметь ширину 512 px и полные ряды по 32 px (до 1024 рядов).",
-            )
-            .into());
+        if !valid_sheet_size(&image) || image.height() / CELL > MAX_ROWS as u32 {
+            return Err(invalid_iconset_dimensions());
         }
-        let mut tiles = Vec::new();
-        for y in 0..image.height() / CELL {
-            for x in 0..COLS as u32 {
-                let tile =
-                    image::imageops::crop_imm(&image, x * CELL, y * CELL, CELL, CELL).to_image();
-                tiles.push(vec![Layer::new(crate::i18n::tr("Оригинал").into(), tile)]);
-            }
-        }
-        Ok(Self { version: 2, tiles })
+        Ok(Self {
+            version: 2,
+            tiles: cells_from_sheet(&image),
+        })
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -268,6 +256,27 @@ fn rotate_hue(pixel: &mut [u8; 4], offset: f32) {
     for c in 0..3 {
         pixel[c] = ((rgb[c] + min) * 255.0).round() as u8;
     }
+}
+
+pub(crate) fn valid_sheet_size(image: &RgbaImage) -> bool {
+    image.width() == CELL * COLS as u32 && image.height() > 0 && image.height() % CELL == 0
+}
+
+pub(crate) fn invalid_iconset_dimensions() -> String {
+    crate::i18n::tr("Iconset должен иметь ширину 512 px и полные ряды по 32 px (до 1024 рядов).")
+        .into()
+}
+
+/// One original layer per 32×32 cell, in the same row-major order as `from_png`.
+pub(crate) fn cells_from_sheet(image: &RgbaImage) -> Vec<Vec<Layer>> {
+    let mut tiles = Vec::with_capacity((image.height() / CELL) as usize * COLS);
+    for y in 0..image.height() / CELL {
+        for x in 0..COLS as u32 {
+            let tile = image::imageops::crop_imm(image, x * CELL, y * CELL, CELL, CELL).to_image();
+            tiles.push(vec![Layer::new(crate::i18n::tr("Оригинал").into(), tile)]);
+        }
+    }
+    tiles
 }
 
 pub fn fit_cell(image: RgbaImage) -> RgbaImage {

@@ -373,6 +373,91 @@ impl Wizard {
         }
     }
 
+    fn append_iconset_dialog(&mut self) {
+        if self.doc.tiles.len() / COLS >= MAX_ROWS {
+            return;
+        }
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("PNG", &["png"])
+            .pick_file()
+        else {
+            return;
+        };
+        self.append_iconset_file(&path);
+    }
+
+    fn append_iconset_file(&mut self, path: &Path) -> bool {
+        match read_png(path) {
+            Ok(image) => self.append_iconset_image(image),
+            Err(error) => {
+                self.status = crate::tf!(
+                    "Ошибка открытия: {error}",
+                    "Open error: {error}",
+                    "打开错误：{error}"
+                );
+                false
+            }
+        }
+    }
+
+    fn append_iconset_image(&mut self, image: image::RgbaImage) -> bool {
+        if !document::valid_sheet_size(&image) {
+            self.status = document::invalid_iconset_dimensions();
+            return false;
+        }
+        let rows = (image.height() / CELL) as usize;
+        if self.doc.tiles.len() / COLS + rows > MAX_ROWS {
+            self.status = crate::i18n::tr("Слияние превысит 1024 рядов.").into();
+            return false;
+        }
+        let tiles = document::cells_from_sheet(&image);
+        let n = rows;
+        if !self.change(|doc| doc.tiles.extend(tiles)) {
+            return false;
+        }
+        self.status = crate::tf!(
+            "Добавлено рядов: {n}. Ctrl+Z — отменить.",
+            "Appended {n} rows. Ctrl+Z to undo.",
+            "已在下方合并 {n} 行。按Ctrl+Z撤销。"
+        );
+        true
+    }
+
+    fn delete_selected_row(&mut self) -> bool {
+        let rows = self.doc.tiles.len() / COLS;
+        if rows <= 1 {
+            return false;
+        }
+        let row = self.selected / COLS;
+        let column = self.selected % COLS;
+        if row >= rows {
+            return false;
+        }
+        let index = if row + 1 == rows {
+            (row - 1) * COLS + column
+        } else {
+            row * COLS + column
+        };
+        let selected_before = self.selected;
+        let layer_before = self.layer;
+        self.selected = index;
+        if !self.change(|doc| {
+            let start = row * COLS;
+            doc.tiles.drain(start..start + COLS);
+        }) {
+            self.selected = selected_before;
+            self.layer = layer_before;
+            self.sync();
+            return false;
+        }
+        self.selection = std::collections::BTreeSet::from([index]);
+        self.selection_anchor = index;
+        self.selected = index;
+        self.sync();
+        self.status = crate::i18n::tr("Ряд удалён. Ctrl+Z — отменить.").into();
+        true
+    }
+
     fn save_project(&mut self) -> bool {
         let Some(path) = rfd::FileDialog::new()
             .add_filter(crate::i18n::tr("Проект Wizard"), &["isw2"])
@@ -1485,5 +1570,316 @@ mod tests {
         assert!((top.height() - 32.0 * cell).abs() < 0.5);
         assert!((bottom.height() - cell).abs() < 0.5);
         output.textures_delta.clear();
+    }
+
+    fn temp_png(name: &str, image: &image::RgbaImage) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "iconset-wizard-{name}-{}-{}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        image
+            .save_with_format(&path, image::ImageFormat::Png)
+            .unwrap();
+        path
+    }
+
+    fn remove_png(path: &Path) {
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn layer_with_pixel(name: &str, at: (u32, u32), color: [u8; 4]) -> Layer {
+        let mut image = image::RgbaImage::new(CELL, CELL);
+        image.put_pixel(at.0, at.1, image::Rgba(color));
+        Layer::new(name.into(), image)
+    }
+
+    fn assert_same_tiles(left: &[Vec<Layer>], right: &[Vec<Layer>]) {
+        assert!(
+            left == right,
+            "tiles differ ({} vs {} cells)",
+            left.len(),
+            right.len()
+        );
+    }
+
+    fn document_with_rows(rows: Vec<Vec<Layer>>) -> Document {
+        let mut tiles = Vec::new();
+        for layers in rows {
+            for _ in 0..COLS {
+                tiles.push(layers.clone());
+            }
+        }
+        Document { version: 2, tiles }
+    }
+
+    #[test]
+    fn append_iconset_adds_rows_under_existing_tiles_and_undo_restores() {
+        i18n::set_language(i18n::Language::English);
+        let mut source = image::RgbaImage::new(512, 64);
+        source.put_pixel(0, 0, image::Rgba([9, 8, 7, 255]));
+        source.put_pixel(31, 31, image::Rgba([1, 2, 3, 4]));
+        source.put_pixel(0, 32, image::Rgba([5, 6, 7, 8]));
+        let path = temp_png("append", &source);
+        let original = document_with_rows(vec![vec![layer_with_pixel(
+            "keep",
+            (0, 0),
+            [11, 22, 33, 44],
+        )]]);
+        let before = original.tiles.clone();
+        let mut wizard = Wizard::from_document(original, None, String::new());
+        wizard.selected = 5;
+        wizard.selection = std::collections::BTreeSet::from([5, 6]);
+        wizard.selection_anchor = 4;
+        wizard.layer = 0;
+        assert!(wizard.change(|doc| doc.tiles[0][0].name = "edited".into()));
+        let edited = wizard.doc.tiles.clone();
+        wizard.refresh = false;
+        assert!(wizard.append_iconset_file(&path));
+        assert_eq!(wizard.doc.tiles.len(), before.len() + 32);
+        assert_same_tiles(&wizard.doc.tiles[..edited.len()], &edited);
+        assert_eq!(
+            wizard.doc.tiles[before.len()][0].pixels.rgba[..4],
+            source.get_pixel(0, 0).0
+        );
+        let first = &wizard.doc.tiles[before.len()][0];
+        assert_eq!(first.name, i18n::tr("Оригинал"));
+        assert_eq!(first.pixels.rgba.len(), (CELL * CELL * 4) as usize);
+        assert_eq!(
+            first.pixels.rgba[first.pixels.rgba.len() - 4..],
+            [1, 2, 3, 4]
+        );
+        assert_eq!(
+            wizard.doc.tiles[before.len() + COLS][0].pixels.rgba[..4],
+            source.get_pixel(0, 32).0
+        );
+        assert!(
+            wizard.doc.tiles[before.len()..]
+                .iter()
+                .all(|tile| tile.len() == 1)
+        );
+        assert_eq!(wizard.selected, 5);
+        assert_eq!(wizard.selection, std::collections::BTreeSet::from([5, 6]));
+        assert_eq!(wizard.selection_anchor, 4);
+        assert!(wizard.dirty);
+        assert!(wizard.refresh);
+        assert_eq!(wizard.undo.len(), 2);
+        for (language, expected) in [
+            (
+                i18n::Language::Russian,
+                "Добавлено рядов: 2. Ctrl+Z — отменить.",
+            ),
+            (i18n::Language::English, "Appended 2 rows. Ctrl+Z to undo."),
+            (i18n::Language::Chinese, "已在下方合并 2 行。按Ctrl+Z撤销。"),
+        ] {
+            i18n::set_language(language);
+            let mut localized = Wizard::from_document(
+                document_with_rows(vec![vec![layer_with_pixel(
+                    "keep",
+                    (0, 0),
+                    [11, 22, 33, 44],
+                )]]),
+                None,
+                String::new(),
+            );
+            assert!(localized.append_iconset_file(&path));
+            assert_eq!(localized.status, expected);
+            assert_eq!(localized.doc.tiles.len(), COLS + 32);
+        }
+        remove_png(&path);
+        i18n::set_language(i18n::Language::English);
+        wizard.undo();
+        assert_same_tiles(&wizard.doc.tiles, &edited);
+        wizard.undo();
+        assert_same_tiles(&wizard.doc.tiles, &before);
+    }
+
+    #[test]
+    fn append_iconset_rejects_overflow_and_wrong_width_without_changes() {
+        let mut source = image::RgbaImage::new(512, 64);
+        source.put_pixel(0, 0, image::Rgba([9, 8, 7, 255]));
+        let path = temp_png("overflow", &source);
+        for (language, expected) in [
+            (i18n::Language::Russian, "Слияние превысит 1024 рядов."),
+            (i18n::Language::English, "Merge would exceed 1024 rows."),
+            (i18n::Language::Chinese, "合并后会超过1024行。"),
+        ] {
+            i18n::set_language(language);
+            let doc = Document {
+                version: 2,
+                tiles: vec![vec![]; COLS * (MAX_ROWS - 1)],
+            };
+            let before = doc.tiles.clone();
+            let mut wizard = Wizard::from_document(doc, None, "unchanged".into());
+            wizard.dirty = false;
+            wizard.refresh = false;
+            assert!(!wizard.append_iconset_file(&path));
+            assert_same_tiles(&wizard.doc.tiles, &before);
+            assert!(wizard.undo.is_empty());
+            assert!(!wizard.dirty);
+            assert!(!wizard.refresh);
+            assert_eq!(wizard.status, expected);
+        }
+        i18n::set_language(i18n::Language::English);
+        let mut fitting = Wizard::from_document(
+            Document {
+                version: 2,
+                tiles: vec![vec![]; COLS * (MAX_ROWS - 2)],
+            },
+            None,
+            String::new(),
+        );
+        assert!(fitting.append_iconset_file(&path));
+        assert_eq!(fitting.doc.tiles.len(), MAX_ROWS * COLS);
+        assert_eq!(
+            fitting.doc.tiles[COLS * (MAX_ROWS - 2)][0].pixels.rgba[..4],
+            [9, 8, 7, 255]
+        );
+        let narrow = temp_png("narrow", &image::RgbaImage::new(256, 32));
+        let doc = document_with_rows(vec![vec![layer_with_pixel("keep", (2, 2), [4, 5, 6, 7])]]);
+        let before = doc.tiles.clone();
+        let mut wizard = Wizard::from_document(doc, None, "unchanged".into());
+        wizard.dirty = false;
+        wizard.refresh = false;
+        assert!(!wizard.append_iconset_file(&narrow));
+        remove_png(&path);
+        remove_png(&narrow);
+        assert_same_tiles(&wizard.doc.tiles, &before);
+        assert!(wizard.undo.is_empty());
+        assert!(!wizard.dirty);
+        assert!(!wizard.refresh);
+        assert_eq!(
+            wizard.status,
+            i18n::tr("Iconset должен иметь ширину 512 px и полные ряды по 32 px (до 1024 рядов).")
+        );
+    }
+
+    #[test]
+    fn delete_middle_row_keeps_the_other_rows_and_undo_restores() {
+        i18n::set_language(i18n::Language::English);
+        let top = vec![
+            layer_with_pixel("top-a", (0, 0), [1, 2, 3, 255]),
+            layer_with_pixel("top-b", (4, 6), [1, 9, 3, 200]),
+        ];
+        let middle = vec![
+            layer_with_pixel("mid-a", (0, 0), [2, 0, 0, 255]),
+            layer_with_pixel("mid-b", (1, 1), [2, 1, 0, 255]),
+            layer_with_pixel("mid-c", (2, 2), [2, 2, 0, 255]),
+        ];
+        let bottom = vec![layer_with_pixel("bottom", (0, 0), [3, 4, 5, 255])];
+        let doc = document_with_rows(vec![top, middle, bottom]);
+        let before = doc.tiles.clone();
+        let mut wizard = Wizard::from_document(doc, None, String::new());
+        wizard.selected = COLS + 7;
+        wizard.layer = 2;
+        wizard.selection = std::collections::BTreeSet::from([0, COLS + 7, COLS * 2 + 3]);
+        wizard.selection_anchor = 1;
+        wizard.refresh = false;
+        assert!(wizard.delete_selected_row());
+        assert_eq!(wizard.doc.tiles.len(), COLS * 2);
+        assert_same_tiles(&wizard.doc.tiles[..COLS], &before[..COLS]);
+        assert_same_tiles(&wizard.doc.tiles[COLS..], &before[COLS * 2..]);
+        assert_eq!(wizard.doc.tiles[COLS][0].name, "bottom");
+        assert_eq!(wizard.doc.tiles[COLS][0].pixels.rgba[..4], [3, 4, 5, 255]);
+        assert_eq!(wizard.selected, COLS + 7);
+        assert_eq!(
+            wizard.selection,
+            std::collections::BTreeSet::from([COLS + 7])
+        );
+        assert_eq!(wizard.selection_anchor, COLS + 7);
+        assert_eq!(wizard.layer, 0);
+        assert!(wizard.dirty);
+        assert!(wizard.refresh);
+        for (language, expected) in [
+            (i18n::Language::English, "Row deleted. Ctrl+Z to undo."),
+            (i18n::Language::Russian, "Ряд удалён. Ctrl+Z — отменить."),
+            (i18n::Language::Chinese, "已删除该行。按Ctrl+Z撤销。"),
+        ] {
+            i18n::set_language(language);
+            assert_eq!(
+                {
+                    let mut localized = Wizard::from_document(
+                        document_with_rows(vec![
+                            vec![layer_with_pixel("a", (0, 0), [1, 0, 0, 255])],
+                            vec![layer_with_pixel("b", (0, 0), [2, 0, 0, 255])],
+                        ]),
+                        None,
+                        String::new(),
+                    );
+                    localized.selected = COLS;
+                    assert!(localized.delete_selected_row());
+                    localized.status
+                },
+                expected
+            );
+        }
+        i18n::set_language(i18n::Language::English);
+        wizard.undo();
+        assert_same_tiles(&wizard.doc.tiles, &before);
+        let offset = ((2 * CELL + 2) * 4) as usize;
+        assert_eq!(
+            &wizard.doc.tiles[COLS + 7][2].pixels.rgba[offset..offset + 4],
+            &[2, 2, 0, 255]
+        );
+    }
+
+    #[test]
+    fn delete_last_row_moves_to_the_previous_row_and_refuses_the_final_row() {
+        i18n::set_language(i18n::Language::Russian);
+        let mut row0 = vec![vec![]; COLS];
+        row0[3] = vec![
+            layer_with_pixel("a", (0, 0), [1, 0, 0, 255]),
+            layer_with_pixel("b", (0, 0), [1, 1, 0, 255]),
+            layer_with_pixel("c", (0, 0), [1, 2, 0, 255]),
+            layer_with_pixel("d", (0, 0), [1, 3, 0, 255]),
+        ];
+        let mut row1 = vec![vec![layer_with_pixel("other", (0, 0), [8, 0, 0, 255])]; COLS];
+        row1[3] = vec![
+            layer_with_pixel("x", (0, 0), [9, 0, 0, 255]),
+            layer_with_pixel("y", (0, 0), [9, 1, 0, 255]),
+            layer_with_pixel("z", (0, 0), [9, 2, 0, 255]),
+        ];
+        let mut tiles = row0;
+        tiles.extend(row1);
+        let before = tiles.clone();
+        let mut wizard = Wizard::from_document(Document { version: 2, tiles }, None, String::new());
+        wizard.selected = COLS + 3;
+        wizard.layer = 2;
+        wizard.selection = std::collections::BTreeSet::from([COLS + 3, 1, COLS + 4]);
+        wizard.selection_anchor = 0;
+        assert!(wizard.delete_selected_row());
+        assert_eq!(wizard.doc.tiles.len(), COLS);
+        assert_eq!(wizard.doc.tiles[3].len(), 4);
+        assert_eq!(wizard.doc.tiles[3][2].pixels.rgba[..4], [1, 2, 0, 255]);
+        assert_eq!(wizard.selected, 3);
+        assert_eq!(wizard.selection, std::collections::BTreeSet::from([3]));
+        assert_eq!(wizard.selection_anchor, 3);
+        assert_eq!(wizard.layer, 2);
+        assert_eq!(wizard.status, "Ряд удалён. Ctrl+Z — отменить.");
+        wizard.undo();
+        assert_same_tiles(&wizard.doc.tiles, &before);
+
+        i18n::set_language(i18n::Language::Chinese);
+        let only = document_with_rows(vec![vec![layer_with_pixel("only", (0, 0), [7, 7, 7, 255])]]);
+        let before = only.tiles.clone();
+        let mut wizard = Wizard::from_document(only, None, "sentinel".into());
+        wizard.selected = 4;
+        wizard.selection = std::collections::BTreeSet::from([4, 2]);
+        wizard.selection_anchor = 2;
+        wizard.dirty = false;
+        wizard.refresh = false;
+        assert!(!wizard.delete_selected_row());
+        assert_same_tiles(&wizard.doc.tiles, &before);
+        assert!(wizard.undo.is_empty());
+        assert!(!wizard.dirty);
+        assert!(!wizard.refresh);
+        assert_eq!(wizard.status, "sentinel");
+        assert_eq!(wizard.selected, 4);
+        assert_eq!(wizard.selection, std::collections::BTreeSet::from([4, 2]));
+        assert_eq!(wizard.selection_anchor, 2);
+        i18n::set_language(i18n::Language::English);
     }
 }

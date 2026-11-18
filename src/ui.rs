@@ -375,16 +375,33 @@ fn button(
     } else {
         TEXT
     };
-    let galley = ui
+    let font = FontId::proportional(12.0);
+    let available = ui.available_width();
+    let single = ui
         .painter()
-        .layout_no_wrap(text.into(), FontId::proportional(12.0), color);
-    let width = if text.is_empty() {
+        .layout_no_wrap(text.into(), font.clone(), color);
+    let natural = if text.is_empty() {
         36.0
     } else {
-        galley.size().x + 49.0
+        single.size().x + 49.0
+    };
+    let wrap = !text.is_empty() && natural > available && available >= 36.0;
+    let (width, galley) = if wrap {
+        (
+            available,
+            ui.painter()
+                .layout(text.into(), font, color, (available - 49.0).max(1.0)),
+        )
+    } else {
+        (natural, single)
+    };
+    let height = if wrap {
+        (galley.size().y + 18.0).max(36.0)
+    } else {
+        36.0
     };
     let (rect, response) = ui.allocate_exact_size(
-        Vec2::new(width, 36.0),
+        Vec2::new(width, height),
         if enabled {
             Sense::click()
         } else {
@@ -402,13 +419,16 @@ fn button(
     );
     icon(
         ui,
-        Rect::from_min_size(rect.min + Vec2::new(10., 9.), Vec2::splat(18.)),
+        Rect::from_min_size(
+            rect.min + Vec2::new(10., (height - 18.0) / 2.0),
+            Vec2::splat(18.),
+        ),
         symbol,
         color.gamma_multiply(opacity),
     );
     if !text.is_empty() {
         ui.painter().galley_with_override_text_color(
-            rect.min + Vec2::new(35., (36. - galley.size().y) / 2.),
+            rect.min + Vec2::new(35., (height - galley.size().y) / 2.),
             galley,
             color.gamma_multiply(opacity),
         );
@@ -867,6 +887,28 @@ impl Wizard {
         {
             self.change(|doc| doc.tiles.extend(vec![vec![]; COLS]));
             self.status = crate::i18n::tr("Пустой ряд добавлен.").into();
+        }
+        if button(
+            ui,
+            Icon::Plus,
+            crate::i18n::tr("Добавить изображение снизу"),
+            self.doc.tiles.len() / COLS < MAX_ROWS,
+            false,
+        )
+        .clicked()
+        {
+            self.append_iconset_dialog();
+        }
+        if button(
+            ui,
+            Icon::Trash,
+            crate::i18n::tr("Удалить этот ряд"),
+            self.doc.tiles.len() / COLS > 1,
+            false,
+        )
+        .clicked()
+        {
+            self.delete_selected_row();
         }
         divider(ui);
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::hover());
