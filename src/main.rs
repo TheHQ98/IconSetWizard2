@@ -55,7 +55,7 @@ struct Wizard {
     recovery_candidates: Vec<PathBuf>,
     recovery_open: bool,
     restored_from: Option<PathBuf>,
-    sheet: Option<TextureHandle>,
+    sheet: Vec<TextureHandle>,
     preview: Option<TextureHandle>,
     refresh: bool,
     thumbnails: Vec<TextureHandle>,
@@ -236,7 +236,7 @@ impl Wizard {
             recovery_candidates: vec![],
             recovery_open: false,
             restored_from: None,
-            sheet: None,
+            sheet: Vec::new(),
             preview: None,
             refresh: true,
             thumbnails: vec![],
@@ -320,7 +320,7 @@ impl Wizard {
             std::fs::metadata(&path)
                 .map_err(|e| e.to_string())
                 .and_then(|meta| {
-                    if meta.len() > 128 * 1024 * 1024 {
+                    if meta.len() > 512 * 1024 * 1024 {
                         return Err(crate::i18n::tr("Файл проекта слишком большой.").into());
                     }
                     let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
@@ -649,7 +649,7 @@ impl Wizard {
             )
         };
         if self.refresh {
-            self.sheet = Some(upload("sheet", self.doc.render()));
+            self.sheet = upload_sheet(ctx, &self.doc.render());
             self.thumbnails = self.doc.tiles[self.selected]
                 .iter()
                 .enumerate()
@@ -676,6 +676,51 @@ impl Wizard {
         }
         self.refresh = false;
     }
+}
+
+/// Horizontal strips whose height is a whole number of icon rows and no taller
+/// than the GPU texture limit. Strip width stays 512 px.
+fn sheet_strip_pixel_height(max_texture_side: usize) -> u32 {
+    let cell = CELL as usize;
+    if max_texture_side < cell {
+        return CELL;
+    }
+    let rows = (max_texture_side / cell).clamp(1, MAX_ROWS);
+    (rows * cell) as u32
+}
+
+fn sheet_strip_heights(image_height: u32, max_texture_side: usize) -> Vec<u32> {
+    let strip_px = sheet_strip_pixel_height(max_texture_side);
+    let mut heights = Vec::new();
+    let mut y = 0u32;
+    while y < image_height {
+        let height = (image_height - y).min(strip_px);
+        heights.push(height);
+        y += height;
+    }
+    heights
+}
+
+fn upload_sheet(ctx: &egui::Context, image: &image::RgbaImage) -> Vec<TextureHandle> {
+    let width = image.width();
+    let raw = image.as_raw();
+    let stride = width as usize * 4;
+    let mut strips = Vec::new();
+    let mut y = 0u32;
+    for height in sheet_strip_heights(image.height(), ctx.input(|i| i.max_texture_side)) {
+        let start = y as usize * stride;
+        let end = start + height as usize * stride;
+        strips.push(ctx.load_texture(
+            format!("sheet-{}", strips.len()),
+            egui::ColorImage::from_rgba_unmultiplied(
+                [width as usize, height as usize],
+                &raw[start..end],
+            ),
+            egui::TextureOptions::NEAREST,
+        ));
+        y += height;
+    }
+    strips
 }
 
 fn checker(ui: &egui::Ui, rect: Rect, step: f32) {
@@ -1190,7 +1235,7 @@ mod tests {
         let original = doc.tiles[0].clone();
         let mut wizard = Wizard::from_document(doc, None, String::new());
         let output = shortcut_frame(&mut wizard, &ctx, vec![]);
-        let sheet = wizard.sheet.as_ref().unwrap().id();
+        let sheet = wizard.sheet.first().unwrap().id();
         let atlas = output
             .shapes
             .iter()
@@ -1371,7 +1416,7 @@ mod tests {
         assert_eq!(w.doc.tiles[0][1].name, "red");
         let output = frame(&mut w, vec![]);
         let source = mesh_rect(&output, w.thumbnails[1].id()).center();
-        let atlas = mesh_rect(&output, w.sheet.as_ref().unwrap().id());
+        let atlas = mesh_rect(&output, w.sheet.first().unwrap().id());
         let cell = CELL as f32 * w.zoom;
         let target = atlas.min + Vec2::new(cell * 1.5, cell / 2.0);
         frame(&mut w, pointer(source, true));
@@ -1385,5 +1430,60 @@ mod tests {
         frame(&mut w, vec![egui::Event::PointerMoved(end)]);
         frame(&mut w, pointer(end, false));
         assert_eq!(w.selected_cells(), vec![0, 1, 16, 17]);
+    }
+
+    #[test]
+    fn sheet_strips_keep_full_icon_rows_inside_the_texture_limit() {
+        let heights = sheet_strip_heights(12_576, 8192);
+        assert_eq!(heights, vec![8192, 4384]);
+        assert_eq!(heights.iter().sum::<u32>(), 12_576);
+        assert!(heights.iter().all(|h| h % CELL == 0 && *h <= 8192));
+        assert_eq!(sheet_strip_heights(12_576, 32_768), vec![12_576]);
+        assert_eq!(sheet_strip_heights(256, 2048), vec![256]);
+        assert_eq!(sheet_strip_heights(640, 512), vec![512, 128]);
+    }
+
+    #[test]
+    fn tall_atlas_is_drawn_as_stacked_full_width_strips() {
+        let ctx = egui::Context::default();
+        ui::configure(&ctx);
+        let mut doc = blank();
+        doc.tiles.extend(vec![vec![]; COLS * 25]);
+        let mut wizard = Wizard::from_document(doc, None, String::new());
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 3200.0))),
+                max_texture_side: Some(1024),
+                ..Default::default()
+            },
+            |ui| wizard.draw_ui(ui),
+        );
+        assert_eq!(wizard.sheet.len(), 2);
+        assert_eq!(wizard.sheet[0].size(), [512, 1024]);
+        assert_eq!(wizard.sheet[1].size(), [512, 32]);
+        let mesh_rect = |id| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| {
+                    if let egui::Shape::Mesh(mesh) = &shape.shape
+                        && mesh.texture_id == id
+                    {
+                        Some(mesh.calc_bounds())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap()
+        };
+        let top = mesh_rect(wizard.sheet[0].id());
+        let bottom = mesh_rect(wizard.sheet[1].id());
+        assert!((top.bottom() - bottom.top()).abs() < 0.5);
+        assert!((top.left() - bottom.left()).abs() < 0.5);
+        assert!((top.width() - bottom.width()).abs() < 0.5);
+        let cell = CELL as f32 * wizard.zoom;
+        assert!((top.height() - 32.0 * cell).abs() < 0.5);
+        assert!((bottom.height() - cell).abs() < 0.5);
+        output.textures_delta.clear();
     }
 }

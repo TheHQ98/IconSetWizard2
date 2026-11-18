@@ -1,7 +1,7 @@
 {
-  "Iconset должен иметь ширину 512 px и полные ряды по 32 px (до 256 рядов).": [
-    "Iconset must be 512 px wide with complete 32 px rows (up to 256 rows).",
-    "图标集必须为512像素宽，包含完整的32像素行（最多256行）。"
+  "Iconset должен иметь ширину 512 px и полные ряды по 32 px (до 1024 рядов).": [
+    "Iconset must be 512 px wide with complete 32 px rows (up to 1024 rows).",
+    "图标集必须为512像素宽，包含完整的32像素行（最多1024行）。"
   ],
   "Оригинал": [
     "Original",
@@ -19,9 +19,9 @@
     "Invalid layer pixels or parameters.",
     "图层像素或参数无效。"
   ],
-  "Проект превышает лимит 64 MB пиксельных данных.": [
-    "Project exceeds the 64 MB pixel data limit.",
-    "项目像素数据超过64 MB限制。"
+  "Проект превышает лимит 256 MB пиксельных данных.": [
+    "Project exceeds the 256 MB pixel data limit.",
+    "项目像素数据超过256 MB限制。"
   ],
   "Выберите изображение PNG.": [
     "Choose a PNG image.",
@@ -239,9 +239,9 @@
     "Preferences file is too large",
     "设置文件过大"
   ],
-  "Копия превышает 128 MB": [
-    "Recovery copy exceeds 128 MB",
-    "恢复副本超过128 MB"
+  "Копия превышает 512 MB": [
+    "Recovery copy exceeds 512 MB",
+    "恢复副本超过512 MB"
   ],
   "Неизвестный формат копии": [
     "Unknown recovery format",
@@ -255,9 +255,9 @@
     "Project without description",
     "没有描述的项目"
   ],
-  "Автосохранение превышает 128 MB": [
-    "Autosave exceeds 128 MB",
-    "自动保存超过128 MB"
+  "Автосохранение превышает 512 MB": [
+    "Autosave exceeds 512 MB",
+    "自动保存超过512 MB"
   ],
   "Новый Iconset": [
     "New Iconset",

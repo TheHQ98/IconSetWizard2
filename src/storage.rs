@@ -61,8 +61,8 @@ pub fn save_preferences(root: &Path, preferences: &Preferences) -> Result<(), St
 }
 
 pub fn read_recovery(path: &Path) -> Result<Recovery, String> {
-    if std::fs::metadata(path).map_err(|e| e.to_string())?.len() > 128 * 1024 * 1024 {
-        return Err(crate::i18n::tr("Копия превышает 128 MB").into());
+    if std::fs::metadata(path).map_err(|e| e.to_string())?.len() > 512 * 1024 * 1024 {
+        return Err(crate::i18n::tr("Копия превышает 512 MB").into());
     }
     let snapshot: Recovery =
         serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
@@ -131,8 +131,8 @@ impl RecoveryStore {
     pub fn write(&self, snapshot: &Recovery) -> Result<(), String> {
         snapshot.document.validate()?;
         let bytes = serde_json::to_vec(snapshot).map_err(|e| e.to_string())?;
-        if bytes.len() > 128 * 1024 * 1024 {
-            return Err(crate::i18n::tr("Автосохранение превышает 128 MB").into());
+        if bytes.len() > 512 * 1024 * 1024 {
+            return Err(crate::i18n::tr("Автосохранение превышает 512 MB").into());
         }
         atomic_write(&self.path, &bytes)?;
         let info = RecoveryInfo {
